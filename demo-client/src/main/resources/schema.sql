@@ -1,0 +1,4 @@
+CREATE TABLE orders (
+    id BIGINT PRIMARY KEY,
+    status VARCHAR(32) NOT NULL
+);
