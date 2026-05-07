@@ -6,8 +6,6 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
-
 @RestController
 public class DemoOrderController {
 
@@ -18,12 +16,12 @@ public class DemoOrderController {
     }
 
     @GetMapping("/orders")
-    public List<DemoOrder> listByStatus(@RequestParam(defaultValue = "PAID") String status) {
+    public DemoOrderQueryResponse listByStatus(@RequestParam(defaultValue = "PAID") String status) {
         return demoOrderService.queryByStatus(status);
     }
 
     @PutMapping("/orders/{id}/status")
-    public int updateStatus(@PathVariable Long id, @RequestParam String status) {
+    public DemoOrderUpdateResponse updateStatus(@PathVariable Long id, @RequestParam String status) {
         return demoOrderService.updateStatus(id, status);
     }
 }

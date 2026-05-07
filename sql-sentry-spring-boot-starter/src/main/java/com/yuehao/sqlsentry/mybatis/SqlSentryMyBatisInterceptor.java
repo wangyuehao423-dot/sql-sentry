@@ -1,11 +1,14 @@
 package com.yuehao.sqlsentry.mybatis;
 
 import com.yuehao.sqlsentry.annotation.SqlSentry;
+import com.yuehao.sqlsentry.client.SqlCapturePrintContext;
 import com.yuehao.sqlsentry.client.SqlCaptureReporter;
 import com.yuehao.sqlsentry.config.SqlSentryProperties;
 import com.yuehao.sqlsentry.model.SqlRewriteRule;
 import com.yuehao.sqlsentry.rewrite.SqlFingerprintUtils;
 import com.yuehao.sqlsentry.rewrite.SqlRewriteLocalCache;
+import org.apache.ibatis.mapping.ParameterMapping;
+import org.apache.ibatis.mapping.ParameterMode;
 import org.apache.ibatis.executor.statement.StatementHandler;
 import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.MappedStatement;
@@ -17,6 +20,7 @@ import org.apache.ibatis.plugin.Plugin;
 import org.apache.ibatis.plugin.Signature;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.reflection.SystemMetaObject;
+import org.apache.ibatis.type.TypeHandlerRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,6 +28,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.time.temporal.TemporalAccessor;
+import java.util.Date;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
@@ -40,6 +47,10 @@ public class SqlSentryMyBatisInterceptor implements Interceptor {
     private static final Logger log = LoggerFactory.getLogger(SqlSentryMyBatisInterceptor.class);
     private static final String DELEGATE_MAPPED_STATEMENT = "delegate.mappedStatement";
     private static final String MAPPED_STATEMENT = "mappedStatement";
+    private static final String ORIGINAL_SQL_CONTEXT_KEY = "__sqlSentryOriginalSql";
+    private static final String EXAMPLE_SQL_CONTEXT_KEY = "__sqlSentryExampleSql";
+    private static final String AUTO_REPLACED_CONTEXT_KEY = "__sqlSentryAutoReplaced";
+    private static final String REWRITE_REASON_CONTEXT_KEY = "__sqlSentryRewriteReason";
 
     private static volatile Field sqlField;
 
@@ -103,15 +114,13 @@ public class SqlSentryMyBatisInterceptor implements Interceptor {
 
         MappedStatement mappedStatement = resolveMappedStatement(statementHandler);
         String originalSql = SqlFingerprintUtils.normalize(boundSql.getSql());
+        storeCaptureContext(boundSql, mappedStatement, originalSql);
         SqlRewriteRule rule = localCache.get(SqlFingerprintUtils.fingerprint(originalSql));
         if (rule == null) {
             return;
         }
 
         if (!isQueryStatement(mappedStatement, originalSql)) {
-            if (isMutationStatement(mappedStatement, originalSql)) {
-                printAdviceOnly(rule, originalSql);
-            }
             return;
         }
 
@@ -121,7 +130,9 @@ public class SqlSentryMyBatisInterceptor implements Interceptor {
 
         try {
             resolveSqlField().set(boundSql, rule.getOptimizedSql());
-            printRewriteApplied(rule, originalSql);
+            boundSql.setAdditionalParameter(AUTO_REPLACED_CONTEXT_KEY, Boolean.TRUE);
+            boundSql.setAdditionalParameter(REWRITE_REASON_CONTEXT_KEY, buildRewriteReason(rule));
+            printRewriteApplied(rule, originalSql, mappedStatement);
         } catch (IllegalAccessException e) {
             log.warn("Failed to rewrite SQL by reflection: {}", e.toString());
         }
@@ -142,7 +153,27 @@ public class SqlSentryMyBatisInterceptor implements Interceptor {
         if (boundSql == null || !hasText(boundSql.getSql())) {
             return;
         }
-        sqlCaptureReporter.reportSlowSql(boundSql.getSql(), elapsedMs);
+        MappedStatement mappedStatement = resolveMappedStatement(statementHandler);
+        String reportSql = stringContextValue(boundSql, ORIGINAL_SQL_CONTEXT_KEY);
+        if (!hasText(reportSql)) {
+            reportSql = SqlFingerprintUtils.normalize(boundSql.getSql());
+        }
+
+        String exampleSql = stringContextValue(boundSql, EXAMPLE_SQL_CONTEXT_KEY);
+        if (!hasText(exampleSql)) {
+            exampleSql = renderExecutableSql(boundSql, mappedStatement);
+        }
+
+        boolean autoReplaced = booleanContextValue(boundSql, AUTO_REPLACED_CONTEXT_KEY);
+        String rewriteReason = stringContextValue(boundSql, REWRITE_REASON_CONTEXT_KEY);
+        sqlCaptureReporter.reportSlowSql(
+                reportSql,
+                elapsedMs,
+                new SqlCapturePrintContext(
+                        mappedStatement == null ? null : mappedStatement.getId(),
+                        exampleSql,
+                        autoReplaced,
+                        rewriteReason));
     }
 
     private boolean isSqlSentryInvocation(Object target) {
@@ -250,22 +281,141 @@ public class SqlSentryMyBatisInterceptor implements Interceptor {
         return current instanceof StatementHandler ? (StatementHandler) current : null;
     }
 
-    private void printAdviceOnly(SqlRewriteRule rule, String originalSql) {
-        String advice = hasText(rule.getAdvice()) ? rule.getAdvice() : rule.getSummary();
-        String briefAdvice = toSingleLine(advice, 96, "This SQL has optimization opportunities. Check EXPLAIN first.");
-        String exampleSql = hasText(rule.getExampleSql()) ? rule.getExampleSql() : originalSql;
-
-        System.out.println("[SQL Sentry] Advice: " + briefAdvice);
-        System.out.println("[SQL Sentry] SQL: " + toSingleLine(exampleSql, 120, exampleSql));
+    private void printRewriteApplied(SqlRewriteRule rule, String originalSql, MappedStatement mappedStatement) {
+        System.out.println("[SQL Sentry] \u7ed3\u8bba: \u6162sql\u5df2\u88ab\u66ff\u6362");
+        System.out.println("[SQL Sentry] \u4f4d\u7f6e: " + buildLocation(mappedStatement));
     }
 
-    private void printRewriteApplied(SqlRewriteRule rule, String originalSql) {
-        String summary = toSingleLine(rule.getSummary(), 48, "Applied SQL rewrite rule");
-        String advice = toSingleLine(rule.getAdvice(), 96, "Verify that the result set stays equivalent to the original SQL.");
+    private String buildLocation(MappedStatement mappedStatement) {
+        return mappedStatement == null ? "unknown.mapper.method" : mappedStatement.getId();
+    }
 
-        System.out.println("[SQL Sentry] Rewrite applied: " + summary);
-        System.out.println("[SQL Sentry] Advice: " + advice);
-        System.out.println("[SQL Sentry] Original SQL: " + toSingleLine(originalSql, 120, originalSql));
+    private String buildRewriteReason(SqlRewriteRule rule) {
+        String reason = hasText(rule.getSummary()) ? rule.getSummary() : rule.getAdvice();
+        return trimTrailingPunctuation(toSingleLine(reason, 48, "\u547d\u4e2d\u6162 SQL \u66ff\u6362\u89c4\u5219"));
+    }
+
+    private void storeCaptureContext(BoundSql boundSql, MappedStatement mappedStatement, String originalSql) {
+        boundSql.setAdditionalParameter(ORIGINAL_SQL_CONTEXT_KEY, originalSql);
+        boundSql.setAdditionalParameter(EXAMPLE_SQL_CONTEXT_KEY, renderExecutableSql(boundSql, mappedStatement));
+    }
+
+    private String renderExecutableSql(BoundSql boundSql, MappedStatement mappedStatement) {
+        if (boundSql == null || !hasText(boundSql.getSql())) {
+            return null;
+        }
+
+        String sql = compactSql(boundSql.getSql());
+        Object parameterObject = boundSql.getParameterObject();
+        if (parameterObject == null) {
+            return sql;
+        }
+
+        List<ParameterMapping> parameterMappings = boundSql.getParameterMappings();
+        if (parameterMappings == null || parameterMappings.isEmpty()) {
+            return sql;
+        }
+
+        TypeHandlerRegistry typeHandlerRegistry = mappedStatement == null
+                ? null
+                : mappedStatement.getConfiguration().getTypeHandlerRegistry();
+        MetaObject metaObject = mappedStatement == null || parameterObject == null
+                ? null
+                : mappedStatement.getConfiguration().newMetaObject(parameterObject);
+
+        StringBuilder renderedSql = new StringBuilder(sql.length() + 32);
+        int searchFrom = 0;
+        for (ParameterMapping parameterMapping : parameterMappings) {
+            if (parameterMapping.getMode() == ParameterMode.OUT) {
+                continue;
+            }
+
+            int placeholderIndex = sql.indexOf('?', searchFrom);
+            if (placeholderIndex < 0) {
+                break;
+            }
+
+            renderedSql.append(sql, searchFrom, placeholderIndex);
+            Object value = resolveParameterValue(boundSql, parameterObject, parameterMapping, metaObject, typeHandlerRegistry);
+            renderedSql.append(formatSqlLiteral(value));
+            searchFrom = placeholderIndex + 1;
+        }
+        renderedSql.append(sql.substring(searchFrom));
+        return renderedSql.toString();
+    }
+
+    private Object resolveParameterValue(
+            BoundSql boundSql,
+            Object parameterObject,
+            ParameterMapping parameterMapping,
+            MetaObject metaObject,
+            TypeHandlerRegistry typeHandlerRegistry) {
+        String propertyName = parameterMapping.getProperty();
+        if (boundSql.hasAdditionalParameter(propertyName)) {
+            return boundSql.getAdditionalParameter(propertyName);
+        }
+        if (parameterObject == null) {
+            return null;
+        }
+        if (typeHandlerRegistry != null && typeHandlerRegistry.hasTypeHandler(parameterObject.getClass())) {
+            return parameterObject;
+        }
+        if (metaObject == null) {
+            return null;
+        }
+        return metaObject.getValue(propertyName);
+    }
+
+    private String formatSqlLiteral(Object value) {
+        if (value == null) {
+            return "null";
+        }
+        if (value instanceof Number) {
+            return String.valueOf(value);
+        }
+        if (value instanceof Boolean) {
+            return String.valueOf(value);
+        }
+        if (value instanceof Date || value instanceof TemporalAccessor) {
+            return quoteSqlString(String.valueOf(value));
+        }
+        if (value instanceof Character || value instanceof CharSequence) {
+            return quoteSqlString(String.valueOf(value));
+        }
+        if (value instanceof byte[]) {
+            return "'<binary>'";
+        }
+        return quoteSqlString(String.valueOf(value));
+    }
+
+    private String quoteSqlString(String value) {
+        return "'" + value.replace("'", "''") + "'";
+    }
+
+    private String compactSql(String sql) {
+        if (!hasText(sql)) {
+            return null;
+        }
+        return sql.replace("\r", " ").replace("\n", " ").replaceAll("\\s+", " ").trim();
+    }
+
+    private String stringContextValue(BoundSql boundSql, String key) {
+        if (boundSql == null || !boundSql.hasAdditionalParameter(key)) {
+            return null;
+        }
+        Object value = boundSql.getAdditionalParameter(key);
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private boolean booleanContextValue(BoundSql boundSql, String key) {
+        if (boundSql == null || !boundSql.hasAdditionalParameter(key)) {
+            return false;
+        }
+        Object value = boundSql.getAdditionalParameter(key);
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        return value != null && Boolean.parseBoolean(String.valueOf(value));
     }
 
     private boolean isQueryStatement(MappedStatement mappedStatement, String normalizedSql) {
@@ -274,27 +424,6 @@ public class SqlSentryMyBatisInterceptor implements Interceptor {
         }
         return normalizedSql.regionMatches(true, 0, "select", 0, "select".length())
                 || normalizedSql.regionMatches(true, 0, "with", 0, "with".length());
-    }
-
-    private boolean isMutationStatement(MappedStatement mappedStatement, String normalizedSql) {
-        if (mappedStatement != null) {
-            SqlCommandType commandType = mappedStatement.getSqlCommandType();
-            if (commandType == SqlCommandType.INSERT
-                    || commandType == SqlCommandType.UPDATE
-                    || commandType == SqlCommandType.DELETE) {
-                return true;
-            }
-        }
-
-        return normalizedSql.regionMatches(true, 0, "insert", 0, "insert".length())
-                || normalizedSql.regionMatches(true, 0, "update", 0, "update".length())
-                || normalizedSql.regionMatches(true, 0, "delete", 0, "delete".length())
-                || normalizedSql.regionMatches(true, 0, "replace", 0, "replace".length())
-                || normalizedSql.regionMatches(true, 0, "merge", 0, "merge".length())
-                || normalizedSql.regionMatches(true, 0, "truncate", 0, "truncate".length())
-                || normalizedSql.regionMatches(true, 0, "alter", 0, "alter".length())
-                || normalizedSql.regionMatches(true, 0, "drop", 0, "drop".length())
-                || normalizedSql.regionMatches(true, 0, "create", 0, "create".length());
     }
 
     private String toSingleLine(String text, int limit, String fallback) {
@@ -306,6 +435,25 @@ public class SqlSentryMyBatisInterceptor implements Interceptor {
             return compact;
         }
         return compact.substring(0, limit) + "...";
+    }
+
+    private String trimTrailingPunctuation(String text) {
+        if (!hasText(text)) {
+            return text;
+        }
+
+        int end = text.length();
+        while (end > 0) {
+            char current = text.charAt(end - 1);
+            if (current == '.' || current == ',' || current == ';'
+                    || current == '\u3002' || current == '\uff0c' || current == '\uff1b'
+                    || current == '!' || current == '?' || current == '\uff01' || current == '\uff1f') {
+                end--;
+                continue;
+            }
+            break;
+        }
+        return text.substring(0, end);
     }
 
     private boolean hasText(String value) {

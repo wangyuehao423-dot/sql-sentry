@@ -1,12 +1,12 @@
 package com.yuehao.sqlsentry.config;
 
 import com.yuehao.sqlsentry.client.SqlCaptureReporter;
+import com.yuehao.sqlsentry.client.SqlSentryClientViewStore;
 import com.yuehao.sqlsentry.client.SqlSentryPullClient;
 import com.yuehao.sqlsentry.mybatis.SqlSentryMyBatisInterceptor;
 import com.yuehao.sqlsentry.rewrite.SqlRewriteLocalCache;
 import okhttp3.OkHttpClient;
 import org.apache.ibatis.executor.statement.StatementHandler;
-import org.mybatis.spring.boot.autoconfigure.ConfigurationCustomizer;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -42,8 +42,17 @@ public class SqlSentryAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public SqlCaptureReporter sqlCaptureReporter(SqlSentryProperties properties, OkHttpClient sqlSentryOkHttpClient) {
-        return new SqlCaptureReporter(properties, sqlSentryOkHttpClient);
+    public SqlSentryClientViewStore sqlSentryClientViewStore() {
+        return new SqlSentryClientViewStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public SqlCaptureReporter sqlCaptureReporter(
+            SqlSentryProperties properties,
+            OkHttpClient sqlSentryOkHttpClient,
+            SqlSentryClientViewStore sqlSentryClientViewStore) {
+        return new SqlCaptureReporter(properties, sqlSentryOkHttpClient, sqlSentryClientViewStore);
     }
 
     @Bean
@@ -63,12 +72,5 @@ public class SqlSentryAutoConfiguration {
             SqlRewriteLocalCache sqlRewriteLocalCache,
             SqlCaptureReporter sqlCaptureReporter) {
         return new SqlSentryMyBatisInterceptor(properties, sqlRewriteLocalCache, sqlCaptureReporter);
-    }
-
-    @Bean(name = "sqlSentryConfigurationCustomizer")
-    @ConditionalOnMissingBean(name = "sqlSentryConfigurationCustomizer")
-    @ConditionalOnClass({StatementHandler.class, ConfigurationCustomizer.class})
-    public ConfigurationCustomizer sqlSentryConfigurationCustomizer(SqlSentryMyBatisInterceptor interceptor) {
-        return configuration -> configuration.addInterceptor(interceptor);
     }
 }

@@ -27,7 +27,7 @@ class SqlCaptureReporterTest {
     @Test
     void shouldIncludeAiConfigInCapturePayload() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<String> requestBody = new AtomicReference<>();
+        AtomicReference<String> requestBody = new AtomicReference<String>();
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/api/sql/captures", exchange -> handleCapture(exchange, requestBody, latch));
         server.start();
