@@ -1,29 +1,29 @@
 # SQL Sentry
 
-`SQL Sentry` 是一个面向 MyBatis 业务系统的慢 SQL 捕获与智能改写方案，项目拆成三个模块：
+`SQL Sentry` is a slow-SQL capture, diagnosis, and rewrite solution for MyBatis-based services. The repository contains three modules:
 
 - `sql-sentry-spring-boot-starter`
 - `sql-sentry-server`
 - `demo-client`
 
-`starter` 负责客户端能力：MyBatis SQL 拦截、慢 SQL 上报、规则拉取、本地缓存、`BoundSql` 反射改写。
+`starter` provides the client-side capability: MyBatis interception, slow-SQL reporting, rewrite rule pulling, local caching, and `BoundSql` rewrite.
 
-`server` 负责服务端能力：接收慢 SQL、AI 诊断、安全校验、保存改写规则、提供规则拉取接口。
+`server` provides the server-side capability: receiving slow SQL, AI diagnosis, safety checks, storing rewrite rules, and exposing pull/query APIs.
 
-`demo-client` 是业务演示工程，只通过 Maven dependency 引入 starter，不再复制源码。
+`demo-client` is a sample business application that integrates the starter only through a Maven dependency.
 
 ## Modules
 
 ```text
 root-parent
-├─ sql-sentry-spring-boot-starter
-├─ sql-sentry-server
-└─ demo-client
+|- sql-sentry-spring-boot-starter
+|- sql-sentry-server
+\- demo-client
 ```
 
 ## Starter Usage
 
-业务项目需要先引入 GitHub Packages 仓库：
+Add the GitHub Packages repository in the business project:
 
 ```xml
 <repositories>
@@ -34,7 +34,7 @@ root-parent
 </repositories>
 ```
 
-然后引入 starter：
+Then add the starter dependency:
 
 ```xml
 <dependency>
@@ -44,15 +44,11 @@ root-parent
 </dependency>
 ```
 
-如果从 GitHub Packages 拉取依赖时出现 `401 Unauthorized`，需要在本机 Maven 的 `settings.xml` 中配置 GitHub 用户名和 Personal Access Token。
-
-文件路径：
+If GitHub Packages returns `401 Unauthorized`, configure your GitHub username and Personal Access Token in Maven `settings.xml`:
 
 ```text
-C:\Users\你的用户名\.m2\settings.xml
+C:\Users\<your-user>\.m2\settings.xml
 ```
-
-示例：
 
 ```xml
 <settings>
@@ -60,37 +56,49 @@ C:\Users\你的用户名\.m2\settings.xml
         <server>
             <id>github</id>
             <username>wangyuehao423-dot</username>
-            <password>你的 GitHub Personal Access Token</password>
+            <password><your-github-personal-access-token></password>
         </server>
     </servers>
 </settings>
 ```
 
-注意：`server` 里的 `<id>github</id>` 必须和 `pom.xml` 仓库配置里的 `<id>github</id>` 保持一致。
+The `<id>github</id>` here must match the repository id in `pom.xml`.
 
 ## Configuration
 
-业务项目在 `application.properties` 中添加：
+The SQL Sentry server address is fixed inside the starter:
+
+```text
+http://175.178.42.12/sql-sentry
+```
+
+Business projects do not need to configure `sql.sentry.server-base-url`, and external configuration cannot override it. Business projects only need to configure whether SQL Sentry is enabled, capture/rewrite toggles, slow-SQL thresholds, `source`, `database`, and AI parameters.
+
+Add only the business-side options you need in `application.properties`:
 
 ```properties
 sql.sentry.enabled=true
 sql.sentry.capture-enabled=true
 sql.sentry.rewrite-enabled=true
-sql.sentry.server-base-url=http://127.0.0.1:18080
 sql.sentry.slow-sql-threshold-ms=500
 sql.sentry.pull-interval-ms=30000
 sql.sentry.source=demo-service
 sql.sentry.database=demo_db
+sql.sentry.ai.model=
+sql.sentry.ai.api-url=
+sql.sentry.ai.api-key=
 ```
 
-默认值：
+Default values:
 
 - `sql.sentry.source=default-service`
 - `sql.sentry.database=default`
+- `sql.sentry.pull-interval-ms=30000`
+- `sql.sentry.slow-sql-threshold-ms=500`
 
 ## Mapper Usage
 
-在需要治理的 Mapper 类或方法上添加 `@SqlSentry` 即可启用治理：
+Add `@SqlSentry` on the Mapper class or method that should participate:
 
 ```java
 import com.yuehao.sqlsentry.annotation.SqlSentry;
@@ -102,11 +110,11 @@ public interface OrderMapper {
 }
 ```
 
-`@SqlAudit` 已移除，业务方法不需要额外标注。
+`@SqlAudit` has been removed. Business methods no longer need an extra annotation.
 
 ## Behavior
 
-当前支持对以下 SQL 做慢 SQL 诊断建议：
+Slow-SQL diagnosis currently supports:
 
 - `SELECT`
 - `WITH`
@@ -114,47 +122,35 @@ public interface OrderMapper {
 - `DELETE`
 - `INSERT`
 
-但自动改写规则只对 `SELECT / WITH` 生效。
+Automatic rewrite rules are applied only to `SELECT / WITH`.
 
 ### SELECT / WITH
 
-查询语句可以进入完整自动改写流程：
-
 ```text
-业务 SQL 执行
-↓
-starter 拦截 MyBatis SQL
-↓
-慢 SQL 上报服务端
-↓
-服务端 AI 诊断
-↓
-安全校验
-↓
-保存改写规则
-↓
-客户端定时拉取规则
-↓
-下次执行同类 SQL 时自动改写
+Business SQL executes
+-> starter intercepts MyBatis SQL
+-> slow SQL is reported to the server
+-> server runs AI diagnosis
+-> safety validation
+-> rewrite rule stored
+-> client periodically pulls rules
+-> similar SQL is auto-rewritten on later execution
 ```
 
 ### UPDATE / DELETE / INSERT
 
-非查询语句只生成优化建议，不会自动改写：
+Non-query SQL only produces optimization suggestions and is not auto-rewritten:
 
 ```text
-UPDATE / DELETE / INSERT 慢 SQL
-↓
-服务端分析并输出优化建议
-↓
-不保存为自动改写规则
-↓
-客户端不会自动替换这类 SQL
+UPDATE / DELETE / INSERT slow SQL
+-> server analyzes and returns suggestions
+-> no rewrite mapping is stored
+-> client will not auto-replace this kind of SQL
 ```
 
-这样做是为了避免自动改写修改类 SQL 导致数据风险。
+This avoids the risk of automatically rewriting data-modifying SQL.
 
-服务端会明确记录：
+The server records:
 
 ```text
 Non-query SQL only generates suggestions, skip rewrite mapping.
@@ -162,34 +158,39 @@ Non-query SQL only generates suggestions, skip rewrite mapping.
 
 ## Local Verification
 
-在根目录执行：
+From the repository root:
 
 ```bash
-mvn clean install
+mvn clean package -DskipTests
 ```
 
-验证点：
+Optional full test run:
 
-1. `sql-sentry-spring-boot-starter` 可以单独打成 jar。
-2. `sql-sentry-server` 可以正常启动。
-3. `demo-client` 只通过 Maven dependency 引入 starter。
-4. 启动后可以正常触发 Mapper 拦截、慢 SQL 上报和规则拉取。
+```bash
+mvn test
+```
+
+Verify:
+
+1. `sql-sentry-spring-boot-starter` packages successfully.
+2. `sql-sentry-server` packages successfully and produces an executable Spring Boot jar.
+3. `demo-client` integrates the starter without configuring `sql.sentry.server-base-url`.
 
 ## Run Server
 
-启动服务端：
+Start the server:
 
 ```bash
 mvn -pl sql-sentry-server spring-boot:run
 ```
 
-服务端默认端口：
+Externally accessible server address:
 
 ```text
-18080
+http://175.178.42.12/sql-sentry
 ```
 
-服务端主要接口：
+Server API endpoints remain:
 
 ```text
 POST /api/sql/captures
@@ -198,39 +199,34 @@ GET  /api/sql/rewrite-mappings
 GET  /api/metrics/diagnostics
 ```
 
-查看最近慢 SQL：
+Examples:
 
 ```bash
-curl "http://127.0.0.1:18080/api/sql/captures/recent?limit=10"
-```
-
-查看已生成的改写规则：
-
-```bash
-curl "http://127.0.0.1:18080/api/sql/rewrite-mappings?limit=10"
+curl "http://175.178.42.12/sql-sentry/api/sql/captures/recent?limit=10"
+curl "http://175.178.42.12/sql-sentry/api/sql/rewrite-mappings?limit=10"
 ```
 
 ## Run Demo Client
 
-启动示例业务项目：
+Start the demo client:
 
 ```bash
 mvn -pl demo-client spring-boot:run
 ```
 
-demo-client 默认端口：
+Default demo port:
 
 ```text
 8080
 ```
 
-触发 SELECT SQL：
+Trigger SELECT SQL:
 
 ```bash
 curl "http://127.0.0.1:8080/orders?status=PAID"
 ```
 
-触发 UPDATE SQL：
+Trigger UPDATE SQL:
 
 ```bash
 curl -X PUT "http://127.0.0.1:8080/orders/1/status?status=CANCELLED"
@@ -238,7 +234,7 @@ curl -X PUT "http://127.0.0.1:8080/orders/1/status?status=CANCELLED"
 
 ## Publish
 
-根工程已配置 GitHub Packages：
+The root project is configured for GitHub Packages:
 
 ```xml
 <distributionManagement>
@@ -249,35 +245,20 @@ curl -X PUT "http://127.0.0.1:8080/orders/1/status?status=CANCELLED"
 </distributionManagement>
 ```
 
-本地发布 starter：
+Publish the starter locally:
 
 ```bash
 mvn -B -pl sql-sentry-spring-boot-starter -am deploy
 ```
 
-GitHub Actions 手动触发工作流：
+GitHub Actions workflow:
 
 ```text
 .github/workflows/publish.yml
 ```
 
-工作流使用：
-
-- `actions/setup-java@v4`
-- `JDK 17`
-- `GITHUB_TOKEN`
-- `workflow_dispatch`
-
-发布成功后，GitHub Packages 中会出现：
+After publishing:
 
 ```text
 com.yuehao:sql-sentry-spring-boot-starter:1.0.0
 ```
-
-## Module Responsibilities
-
-| 模块 | 作用 |
-|---|---|
-| `sql-sentry-spring-boot-starter` | 客户端中间件，负责 SQL 拦截、慢 SQL 上报、规则拉取、本地缓存、SQL 改写 |
-| `sql-sentry-server` | 服务端，负责慢 SQL 接收、AI 诊断、安全校验、规则保存 |
-| `demo-client` | 示例业务项目，演示如何通过 dependency 接入 starter |

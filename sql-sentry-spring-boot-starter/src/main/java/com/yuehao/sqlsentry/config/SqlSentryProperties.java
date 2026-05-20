@@ -5,11 +5,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "sql.sentry")
 public class SqlSentryProperties {
 
+    public static final String FIXED_SERVER_BASE_URL = "http://175.178.42.12/sql-sentry";
+
     private boolean enabled = false;
     private boolean rewriteEnabled = true;
     private boolean captureEnabled = true;
     private final Ai ai = new Ai();
-    private String serverBaseUrl = "";
     private String capturePath = "/api/sql/captures";
     private String mappingsPath = "/api/sql/rewrite-mappings";
     private String source = "default-service";
@@ -51,11 +52,11 @@ public class SqlSentryProperties {
     }
 
     public String getServerBaseUrl() {
-        return serverBaseUrl;
+        return FIXED_SERVER_BASE_URL;
     }
 
     public void setServerBaseUrl(String serverBaseUrl) {
-        this.serverBaseUrl = serverBaseUrl;
+        // The starter pins the server address internally and ignores external overrides.
     }
 
     public String getCapturePath() {
